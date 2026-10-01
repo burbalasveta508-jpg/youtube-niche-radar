@@ -58,12 +58,18 @@ CONFIG = {
         "как", "история", "почему", "что если", "обзор", "я попробовал",
     ],
 
+    # Только длинные видео: минимальная длительность в секундах (900 = 15 минут).
+    # Shorts и короткие ролики отбрасываются.
+    "min_duration_sec": 900,
+    # Какие длительности просить у поиска YouTube: "medium" = 4–20 мин, "long" = больше 20 мин
+    "search_durations": ["long", "medium"],
+
     # Лимит поисковых запросов (каждый стоит 100 ед. квоты из 10 000 в день)
-    "max_search_calls": 60,
+    "max_search_calls": 85,
 
     # Фильтр «аномалий»
     "max_subscribers": 20_000,   # канал считается маленьким, если подписчиков не больше
-    "min_views": 30_000,         # минимум просмотров у видео
+    "min_views": 15_000,         # минимум просмотров у видео
     "min_ratio": 3.0,            # просмотры / подписчики не меньше этого
     "new_channel_days": 180,     # «молодой» канал — создан не раньше N дней назад
 
@@ -148,9 +154,11 @@ class YouTube:
         data = self.call("videos", p, 1)
         return [it["id"] for it in (data or {}).get("items", [])]
 
-    def search(self, query, region, published_after):
+    def search(self, query, region, published_after, duration=None):
         p = {"part": "id", "type": "video", "order": "viewCount", "maxResults": 50,
              "regionCode": region, "publishedAfter": published_after}
+        if duration:
+            p["videoDuration"] = duration
         if query:
             p["q"] = query
         data = self.call("search", p, 100)
@@ -259,10 +267,11 @@ def collect(yt, cfg):
     try:
         for q in cfg["seed_queries"]:
             for region in cfg["regions"]:
-                if calls >= cfg["max_search_calls"]:
-                    break
-                ids.update(yt.search(q, region, after))
-                calls += 1
+                for dur in cfg.get("search_durations") or [None]:
+                    if calls >= cfg["max_search_calls"]:
+                        break
+                    ids.update(yt.search(q, region, after, dur))
+                    calls += 1
     except QuotaExceeded as e:
         print("  !", e, "— продолжаю с тем, что собрано")
     print(f"      видео: {len(ids)} (поисковых запросов: {calls})")
@@ -322,6 +331,8 @@ def analyze(videos, channels, cfg, now=None):
         pub = parse_time(v["published"])
         if now - pub > max_age:
             continue
+        if v.get("duration", 0) < cfg.get("min_duration_sec", 0):
+            continue  # короткие ролики и Shorts не учитываем
         age_h = max((now - pub).total_seconds() / 3600, 1)
         ch_age_days = (now - parse_time(ch["created"])).days if ch.get("created") else 9999
         v = dict(v)
@@ -384,6 +395,7 @@ def analyze(videos, channels, cfg, now=None):
             "median_vph": median([v["vph"] for v in vs1]),
             "new_share": new_share,
             "short_share": sum(v["is_short"] for v in vs1) / n_ch,
+            "median_minutes": median([v["duration"] for v in vs1]) / 60,
             "outlier_share": outlier_share,
             "total_videos_with_term": all_by_term[term],
             "aliases": [],
@@ -447,11 +459,11 @@ def write_csv(niches, outliers, out_dir):
         w = csv.writer(f, delimiter=";")
         w.writerow(["Ниша", "Похожие темы", "Оценка", "Каналов", "Медиана просмотров",
                     "Медиана подписчиков", "Просмотры/подписчики", "Просмотров в час",
-                    "Доля молодых каналов", "Доля коротких", "Тренд", "Примеры"])
+                    "Доля молодых каналов", "Медиана длительности, мин", "Тренд", "Примеры"])
         for n in niches:
             w.writerow([n["term"], ", ".join(n["aliases"]), round(n["score"], 2), n["channels"],
                         int(n["median_views"]), int(n["median_subs"]), round(n["median_ratio"], 1),
-                        int(n["median_vph"]), f"{n['new_share']:.0%}", f"{n['short_share']:.0%}",
+                        int(n["median_vph"]), f"{n['new_share']:.0%}", round(n["median_minutes"]),
                         n.get("trend", ""),
                         " | ".join("https://youtu.be/" + v["id"] for v in
                                    sorted(n["videos"], key=lambda v: -v["ratio"])[:5])])
@@ -471,7 +483,7 @@ def write_md(niches, outliers, enriched, cfg, out_dir, quota):
     esc = lambda t: str(t).replace("|", "/").replace("\n", " ")
     lines = [f"# Радар ниш YouTube — {now}", "",
              f"Регионы: {', '.join(cfg['regions'])} · видео за {cfg['days_back']} дн. · "
-             f"проанализировано {len(enriched)} видео · аномалий {len(outliers)} · квота {quota}", "",
+             f"только видео от {cfg.get('min_duration_sec', 0) // 60} мин · проанализировано {len(enriched)} видео · аномалий {len(outliers)} · квота {quota}", "",
              "| # | Ниша | Тренд | Каналов | Медиана просм. | Медиана подп. | Просм./подп. | Молодых | Пример |",
              "|---|---|---|---|---|---|---|---|---|"]
     for i, n in enumerate(niches[:30], 1):
@@ -495,7 +507,7 @@ def write_md(niches, outliers, enriched, cfg, out_dir, quota):
         lines.append("")
         for v in sorted(n["videos"], key=lambda v: -v["ratio"])[:8]:
             age = f" · канал создан {v['channel_age_days']} дн. назад" if v["is_new_channel"] else ""
-            fmt = " · Shorts" if v["is_short"] else ""
+            fmt = f" · {v['duration'] // 60} мин"
             lines.append(f"- [{esc(v['title'][:80])}](https://youtu.be/{v['id']}) — "
                          f"канал [{esc(v['channel_title'][:40])}](https://www.youtube.com/channel/{v['channel_id']}) · "
                          f"{fmt_num(v['views'])} просм. / {fmt_num(v['subs'])} подп. (×{v['ratio']:.0f}){age}{fmt}")
@@ -523,6 +535,7 @@ def write_html(niches, outliers, enriched, cfg, out_dir, quota, runs_before, dem
         examples = "".join(
             f'<li><a href="https://youtu.be/{e(v["id"])}" target="_blank" rel="noopener">{e(v["title"][:90])}</a>'
             f'<span class="muted"> · <a href="https://www.youtube.com/channel/{e(v["channel_id"])}" target="_blank" rel="noopener">{e(v["channel_title"][:30])}</a> · {fmt_num(v["views"])} просм. / {fmt_num(v["subs"])} подп.'
+            f' · {v["duration"] // 60} мин'
             f'{" · канал " + str(v["channel_age_days"]) + " дн." if v["is_new_channel"] else ""}</span></li>'
             for v in ex)
         aliases = (f'<div class="aliases">также: {e(", ".join(n["aliases"]))}</div>' if n["aliases"] else "")
@@ -542,7 +555,7 @@ def write_html(niches, outliers, enriched, cfg, out_dir, quota, runs_before, dem
   <td class="num">×{n["median_ratio"]:.1f}</td>
   <td class="num">{fmt_num(n["median_vph"])}</td>
   <td class="num">{n["new_share"]:.0%}</td>
-  <td class="num">{n["short_share"]:.0%}</td>
+  <td class="num">{n["median_minutes"]:.0f}</td>
   <td class="num"><span class="tag {tcls}">{e(trend)}</span></td>
 </tr>""")
 
@@ -585,7 +598,7 @@ details ul{{margin:6px 0;padding-left:18px}}details li{{margin:3px 0}}
 .legend{{font-size:13px;color:var(--muted);max-width:900px}}
 </style></head><body><div class="wrap">
 <h1>Радар ниш YouTube</h1>
-<div class="muted">{now} · регионы: {e(", ".join(cfg["regions"]))} · видео за {cfg["days_back"]} дн. · {e(hist_note)}</div>
+<div class="muted">{now} · регионы: {e(", ".join(cfg["regions"]))} · видео за {cfg["days_back"]} дн. · только ролики от {cfg.get("min_duration_sec", 0) // 60} мин · {e(hist_note)}</div>
 {demo_banner}
 <div class="stats">
  <div class="stat"><b>{len(enriched)}</b>свежих видео проанализировано</div>
@@ -597,7 +610,7 @@ details ul{{margin:6px 0;padding-left:18px}}details li{{margin:3px 0}}
 <div class="tbl"><table>
 <tr><th class="num">#</th><th>Ниша</th><th class="num">Оценка</th><th class="num">Каналов</th>
 <th class="num">Медиана просм.</th><th class="num">Медиана подп.</th><th class="num">Просм./подп.</th>
-<th class="num">Просм./час</th><th class="num">Молодых каналов</th><th class="num">Коротких</th><th class="num">Тренд</th></tr>
+<th class="num">Просм./час</th><th class="num">Молодых каналов</th><th class="num">Длит., мин</th><th class="num">Тренд</th></tr>
 {"".join(rows) or '<tr><td colspan="11">Ниш не найдено — ослабьте фильтры в CONFIG.</td></tr>'}
 </table></div>
 <p class="legend"><b>Как читать.</b> «Каналов» — сколько разных маленьких каналов (до {fmt_num(cfg["max_subscribers"])} подп.)
@@ -661,7 +674,7 @@ def demo_data(cfg):
                            "tags": [niche], "channel_id": cid,
                            "published": iso(now - dt.timedelta(hours=rnd.randint(5, 150))),
                            "views": int(subs * rnd.uniform(4, 60)) + 30000, "likes": 0, "comments": 0,
-                           "duration": rnd.choice([45, 600, 900]), "lang": "en"})
+                           "duration": rnd.choice([960, 1300, 1800, 2700]), "lang": "en"})
     return videos, channels
 
 
