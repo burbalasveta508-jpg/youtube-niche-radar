@@ -1,0 +1,36 @@
+name: Радар ниш YouTube
+
+on:
+  schedule:
+    - cron: "45 6 * * *"   # каждый день ~8:45 по Варшаве (время в UTC)
+  workflow_dispatch:       # кнопка «Run workflow» для ручного запуска
+
+permissions:
+  contents: write
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Скан YouTube
+        env:
+          YT_API_KEY: ${{ secrets.YT_API_KEY }}
+        run: python niche_radar.py --out report
+
+      - name: Сводка в отчёт запуска
+        run: cat report/NICHES.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Сохранить результаты в репозиторий
+        run: |
+          git config user.name "niche-radar-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add report
+          git commit -m "Скан ниш $(date -u +%F)" || echo "Нет изменений"
+          git push
