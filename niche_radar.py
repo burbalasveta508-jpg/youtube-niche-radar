@@ -482,8 +482,33 @@ def write_md(niches, outliers, enriched, cfg, out_dir, quota):
                      f"{n['new_share']:.0%} | [{esc(best['title'][:50])}](https://youtu.be/{best['id']}) |")
     if not niches:
         lines.append("| — | Ниш не найдено — ослабьте фильтры в CONFIG | | | | | | | |")
-    lines += ["", "Полная таблица: `niches.csv`, все видео-аномалии: `outlier_videos.csv`, "
-              "отчёт с примерами: `report.html` (скачайте и откройте в браузере)."]
+    lines += ["", "Нажмите на нишу в таблице выше или прокрутите вниз — там каналы и видео по каждой нише.", ""]
+
+    # Подробно: каналы и видео по каждой нише
+    lines += ["## Каналы и видео по нишам", ""]
+    for i, n in enumerate(niches[:30], 1):
+        lines.append(f"### {i}. {esc(n['term'])}")
+        if n["aliases"]:
+            lines.append(f"Похожие темы: {esc(', '.join(n['aliases']))}  ")
+        lines.append(f"Каналов: {n['channels']} · медиана ×{n['median_ratio']:.1f} просмотров к подписчикам · "
+                     f"молодых каналов {n['new_share']:.0%}")
+        lines.append("")
+        for v in sorted(n["videos"], key=lambda v: -v["ratio"])[:8]:
+            age = f" · канал создан {v['channel_age_days']} дн. назад" if v["is_new_channel"] else ""
+            fmt = " · Shorts" if v["is_short"] else ""
+            lines.append(f"- [{esc(v['title'][:80])}](https://youtu.be/{v['id']}) — "
+                         f"канал [{esc(v['channel_title'][:40])}](https://www.youtube.com/channel/{v['channel_id']}) · "
+                         f"{fmt_num(v['views'])} просм. / {fmt_num(v['subs'])} подп. (×{v['ratio']:.0f}){age}{fmt}")
+        lines.append("")
+
+    # Все аномалии
+    lines += ["## Топ-50 видео-аномалий", "",
+              "| Видео | Канал | Подп. | Просм. | ×Рост | Канал, дн. |", "|---|---|---|---|---|---|"]
+    for v in sorted(outliers, key=lambda v: -v["ratio"])[:50]:
+        lines.append(f"| [{esc(v['title'][:60])}](https://youtu.be/{v['id']}) | "
+                     f"[{esc(v['channel_title'][:30])}](https://www.youtube.com/channel/{v['channel_id']}) | "
+                     f"{fmt_num(v['subs'])} | {fmt_num(v['views'])} | ×{v['ratio']:.0f} | {v['channel_age_days']} |")
+    lines += ["", "Таблицы для Excel: `niches.csv`, `outlier_videos.csv`."]
     with open(os.path.join(out_dir, "NICHES.md"), "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
 
@@ -497,7 +522,7 @@ def write_html(niches, outliers, enriched, cfg, out_dir, quota, runs_before, dem
         ex = sorted(n["videos"], key=lambda v: -v["ratio"])[:4]
         examples = "".join(
             f'<li><a href="https://youtu.be/{e(v["id"])}" target="_blank" rel="noopener">{e(v["title"][:90])}</a>'
-            f'<span class="muted"> · {e(v["channel_title"][:30])} · {fmt_num(v["views"])} просм. / {fmt_num(v["subs"])} подп.'
+            f'<span class="muted"> · <a href="https://www.youtube.com/channel/{e(v["channel_id"])}" target="_blank" rel="noopener">{e(v["channel_title"][:30])}</a> · {fmt_num(v["views"])} просм. / {fmt_num(v["subs"])} подп.'
             f'{" · канал " + str(v["channel_age_days"]) + " дн." if v["is_new_channel"] else ""}</span></li>'
             for v in ex)
         aliases = (f'<div class="aliases">также: {e(", ".join(n["aliases"]))}</div>' if n["aliases"] else "")
