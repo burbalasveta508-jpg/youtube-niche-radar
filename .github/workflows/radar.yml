@@ -2,7 +2,7 @@ name: Радар ниш YouTube
 
 on:
   schedule:
-    - cron: "45 6 * * *"   # каждый день ~8:45 по Варшаве (время в UTC)
+    - cron: "31 9 * * *"   # каждый день ~8:45 по Варшаве (время в UTC)
   workflow_dispatch:       # кнопка «Run workflow» для ручного запуска
 
 permissions:
