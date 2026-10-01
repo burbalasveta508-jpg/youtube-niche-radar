@@ -95,6 +95,12 @@ youtube channel subscribe watch viral trending fyp foryou funny try tried trying
 зачем всех никогда можно при наконец два об другой хоть после над больше тот через эти нас про всего них какая много
 разве три эту моя впрочем хорошо свою этой перед иногда лучше чуть том нельзя такой им более всегда конечно всю между
 это видео шортс шорты выпуск серия часть канал подпишись новый новое новая лучшие топ день дня года год лет
+could would should don't doesn't didn't can't won't isn't it's i'm you're that's what's happened happens know knew
+people world built thing things someone something everyone really actually never always need want wants let see
+look looks find found show shows made makes take takes come comes give gives went go get gets say said tell told
+youtubeshorts shortsfeed shortsvideo shortvideo viralvideo viralshorts trend trends trendingshorts reels reel pov
+memes meme fun comedy foryoupage explore explorepage tiktok instagram status edit edits capcut whatsapp
+лайк подписка рекомендации рек тренд тренды шортсы прикол приколы юмор смешно смешное мем мемы
 """.split())
 
 API_BASE = "https://www.googleapis.com/youtube/v3/"
@@ -300,6 +306,12 @@ def collect(yt, cfg):
 # ════════════════════════════════════════════════════════════════════
 def analyze(videos, channels, cfg, now=None):
     now = now or dt.datetime.now(dt.timezone.utc)
+    seed_terms = set()
+    for q in cfg.get("seed_queries", []):
+        tt = tokens(q)
+        if tt:
+            seed_terms.add(" ".join(tt))
+            seed_terms.update(tt)
     max_age = dt.timedelta(days=cfg["days_back"])
 
     enriched = []
@@ -343,6 +355,8 @@ def analyze(videos, channels, cfg, now=None):
 
     candidates = []
     for term, vs in out_by_term.items():
+        if term in seed_terms:
+            continue  # слово из поисковой «затравки» — не ниша, а артефакт сбора
         chans = {v["channel_id"] for v in vs}
         if len(chans) < cfg["min_channels_per_niche"]:
             continue
