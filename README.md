@@ -11,13 +11,18 @@
 ```
 python niche_radar.py --demo                     # проверка без ключа
 python niche_radar.py --key ВАШ_КЛЮЧ             # реальный скан
-python niche_radar.py --key ВАШ_КЛЮЧ --regions US,PL,DE --days 5 --max-subs 10000
+python niche_radar.py --key ВАШ_КЛЮЧ --regions US,DE --days 5 --max-subs 10000
 ```
 
 Результат появится в папке `radar_output`:
 - `report.html` — отчёт с рейтингом ниш (откройте в браузере);
 - `niches.csv` и `outlier_videos.csv` — таблицы для Excel;
 - `history.json` — память прошлых запусков (не удаляйте, на ней строится колонка «Тренд»).
+
+## Рынки
+Радар ищет на четырёх рынках: **США, СНГ, Германия, Испания** — со своим языком и поисковыми словами для каждого.
+Каналы из других стран (Индия, Азия и т.д.) и видео на других языках отбрасываются.
+Настройки: `markets`, `allowed_countries`, `allowed_languages` в блоке CONFIG.
 
 ## Только длинные видео
 Радар учитывает только ролики от 15 минут (`min_duration_sec` в CONFIG). Shorts и короткие видео отбрасываются.

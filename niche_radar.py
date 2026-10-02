@@ -38,8 +38,33 @@ from collections import defaultdict
 # НАСТРОЙКИ — меняйте под себя
 # ════════════════════════════════════════════════════════════════════
 CONFIG = {
-    # Страны, по которым сканируем (коды ISO): US, GB, RU, PL, DE, IN, BR ...
-    "regions": ["US", "PL", "DE", "RU"],
+    # Рынки: страна для поиска, язык и «затравки» на этом языке.
+    # Затравки — НЕ список ниш, а широкие сети, которыми вылавливаем свежие видео.
+    # "" = поиск без запроса (просто самое просматриваемое за неделю).
+    "markets": [
+        {"name": "США", "region": "US", "lang": "en",
+         "seeds": ["", "how to", "explained", "i tried", "history", "documentary",
+                   "story", "what happened", "build", "investigation"]},
+        {"name": "СНГ", "region": "RU", "lang": "ru",
+         "seeds": ["", "как", "почему", "история", "что если", "я попробовал",
+                   "обзор", "документальный", "разбор", "жизнь"]},
+        {"name": "Германия", "region": "DE", "lang": "de",
+         "seeds": ["", "wie", "warum", "geschichte", "ich habe", "erklärt",
+                   "doku", "test", "was wäre wenn", "leben"]},
+        {"name": "Испания", "region": "ES", "lang": "es",
+         "seeds": ["", "cómo", "por qué", "historia", "probé", "explicado",
+                   "documental", "qué pasaría si", "vida", "reto"]},
+    ],
+    # Дополнительные страны только для раздела «В тренде» (дёшево: 1 ед. за запрос)
+    "extra_trend_regions": ["KZ", "UA", "BY", "AT"],
+
+    # Фильтр «свой рынок»: каналы из других стран и видео на других языках отбрасываются.
+    # Если страна канала не указана — решаем по языку видео и названию.
+    "allowed_countries": ["US", "CA",
+                          "RU", "UA", "BY", "KZ", "UZ", "KG", "AM", "AZ", "GE", "MD", "TJ", "TM",
+                          "DE", "AT", "CH",
+                          "ES"],
+    "allowed_languages": ["en", "ru", "uk", "be", "kk", "de", "es"],
 
     # Сколько дней назад смотрим (свежесть видео)
     "days_back": 7,
@@ -49,14 +74,6 @@ CONFIG = {
     # 22 Блоги, 23 Юмор, 24 Развлечения, 25 Новости, 26 Хобби/How-to,
     # 27 Образование, 28 Наука и техника
     "trend_categories": ["0", "1", "2", "15", "17", "20", "22", "23", "24", "26", "27", "28"],
-
-    # Широкие «затравки» для поиска. Это НЕ список ниш — просто сети,
-    # которыми вылавливаем свежие популярные видео. "" = поиск без запроса.
-    "seed_queries": [
-        "", "how to", "ai", "story", "explained", "challenge", "tutorial",
-        "what if", "i tried", "history", "facts", "build", "money",
-        "как", "история", "почему", "что если", "обзор", "я попробовал",
-    ],
 
     # Только длинные видео: минимальная длительность в секундах (900 = 15 минут).
     # Shorts и короткие ролики отбрасываются.
@@ -154,9 +171,11 @@ class YouTube:
         data = self.call("videos", p, 1)
         return [it["id"] for it in (data or {}).get("items", [])]
 
-    def search(self, query, region, published_after, duration=None):
+    def search(self, query, region, published_after, duration=None, lang=None):
         p = {"part": "id", "type": "video", "order": "viewCount", "maxResults": 50,
              "regionCode": region, "publishedAfter": published_after}
+        if lang:
+            p["relevanceLanguage"] = lang
         if duration:
             p["videoDuration"] = duration
         if query:
@@ -236,6 +255,36 @@ def extract_terms(title, tags):
     return terms
 
 
+# Письменности, которые точно не наш рынок (хинди, бенгали, тамильский, тайский, китайский, японский,
+# корейский, арабский, иврит и т.п.)
+FOREIGN_SCRIPT_RE = re.compile(
+    "[\u0590-\u05FF\u0600-\u06FF\u0750-\u077F\u0900-\u0DFF\u0E00-\u0E7F"
+    "\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uAC00-\uD7AF]")
+# Частые слова хинглиша (хинди латиницей)
+HINGLISH = set("""hai hain kya kaise kaisa ka ki ke ko aur nahi nhi bhai yaar diya kar karo kiya mein
+mai hum tum aap apna wala wali bhi sab ek ho gaya gayi hindi bhojpuri tamil telugu desi bollywood
+shri jai bhagwan pyar zindagi""".split())
+
+
+def is_our_market(v, ch, cfg):
+    """True, если видео похоже на рынок США / СНГ / Германии / Испании."""
+    countries = set(cfg.get("allowed_countries") or [])
+    langs = set(cfg.get("allowed_languages") or [])
+    country = (ch or {}).get("country", "")
+    if countries and country and country not in countries:
+        return False
+    lang = (v.get("lang") or "").split("-")[0].lower()
+    if langs and lang and lang not in langs:
+        return False
+    title = v.get("title", "")
+    if FOREIGN_SCRIPT_RE.search(title + " " + " ".join(v.get("tags", [])[:10])):
+        return False
+    words = set(tokens(title))
+    if len(words & HINGLISH) >= 2:
+        return False
+    return True
+
+
 def median(xs):
     return statistics.median(xs) if xs else 0
 
@@ -257,7 +306,8 @@ def collect(yt, cfg):
     ids = set()
 
     print("[1/4] Тренды по категориям…")
-    for region in cfg["regions"]:
+    trend_regions = [m["region"] for m in cfg["markets"]] + cfg.get("extra_trend_regions", [])
+    for region in dict.fromkeys(trend_regions):
         for cat in cfg["trend_categories"]:
             ids.update(yt.trending(region, cat))
     print(f"      видео: {len(ids)}")
@@ -265,12 +315,16 @@ def collect(yt, cfg):
     print("[2/4] Широкий поиск свежих популярных видео…")
     calls = 0
     try:
-        for q in cfg["seed_queries"]:
-            for region in cfg["regions"]:
+        # по очереди: затравка №1 во всех рынках, затравка №2 во всех рынках…
+        depth = max(len(m["seeds"]) for m in cfg["markets"])
+        for i in range(depth):
+            for m in cfg["markets"]:
+                if i >= len(m["seeds"]):
+                    continue
                 for dur in cfg.get("search_durations") or [None]:
                     if calls >= cfg["max_search_calls"]:
                         break
-                    ids.update(yt.search(q, region, after, dur))
+                    ids.update(yt.search(m["seeds"][i], m["region"], after, dur, m.get("lang")))
                     calls += 1
     except QuotaExceeded as e:
         print("  !", e, "— продолжаю с тем, что собрано")
@@ -290,6 +344,7 @@ def collect(yt, cfg):
             "subs": None if st.get("hiddenSubscriberCount") else int(st.get("subscriberCount", 0)),
             "video_count": int(st.get("videoCount", 0)),
             "created": c["snippet"].get("publishedAt"),
+            "country": (c["snippet"].get("country") or "").upper(),
         }
 
     videos = []
@@ -316,7 +371,7 @@ def collect(yt, cfg):
 def analyze(videos, channels, cfg, now=None):
     now = now or dt.datetime.now(dt.timezone.utc)
     seed_terms = set()
-    for q in cfg.get("seed_queries", []):
+    for q in [q for m in cfg.get("markets", []) for q in m["seeds"]]:
         tt = tokens(q)
         if tt:
             seed_terms.add(" ".join(tt))
@@ -328,6 +383,8 @@ def analyze(videos, channels, cfg, now=None):
         ch = channels.get(v["channel_id"])
         if not ch or ch["subs"] is None:
             continue
+        if not is_our_market(v, ch, cfg):
+            continue  # чужой рынок: Индия, Азия, другой язык
         pub = parse_time(v["published"])
         if now - pub > max_age:
             continue
@@ -339,6 +396,7 @@ def analyze(videos, channels, cfg, now=None):
         v.update({
             "subs": ch["subs"],
             "channel_title": ch["title"],
+            "country": ch.get("country", ""),
             "channel_age_days": ch_age_days,
             "ratio": v["views"] / max(ch["subs"], 100),
             "vph": v["views"] / age_h,
@@ -482,7 +540,7 @@ def write_md(niches, outliers, enriched, cfg, out_dir, quota):
     now = dt.datetime.now().strftime("%d.%m.%Y %H:%M")
     esc = lambda t: str(t).replace("|", "/").replace("\n", " ")
     lines = [f"# Радар ниш YouTube — {now}", "",
-             f"Регионы: {', '.join(cfg['regions'])} · видео за {cfg['days_back']} дн. · "
+             f"Рынки: {', '.join(m['name'] for m in cfg['markets'])} · видео за {cfg['days_back']} дн. · "
              f"только видео от {cfg.get('min_duration_sec', 0) // 60} мин · проанализировано {len(enriched)} видео · аномалий {len(outliers)} · квота {quota}", "",
              "| # | Ниша | Тренд | Каналов | Медиана просм. | Медиана подп. | Просм./подп. | Молодых | Пример |",
              "|---|---|---|---|---|---|---|---|---|"]
@@ -507,7 +565,7 @@ def write_md(niches, outliers, enriched, cfg, out_dir, quota):
         lines.append("")
         for v in sorted(n["videos"], key=lambda v: -v["ratio"])[:8]:
             age = f" · канал создан {v['channel_age_days']} дн. назад" if v["is_new_channel"] else ""
-            fmt = f" · {v['duration'] // 60} мин"
+            fmt = f" · {v['duration'] // 60} мин" + (f" · {v['country']}" if v.get("country") else "")
             lines.append(f"- [{esc(v['title'][:80])}](https://youtu.be/{v['id']}) — "
                          f"канал [{esc(v['channel_title'][:40])}](https://www.youtube.com/channel/{v['channel_id']}) · "
                          f"{fmt_num(v['views'])} просм. / {fmt_num(v['subs'])} подп. (×{v['ratio']:.0f}){age}{fmt}")
@@ -598,7 +656,7 @@ details ul{{margin:6px 0;padding-left:18px}}details li{{margin:3px 0}}
 .legend{{font-size:13px;color:var(--muted);max-width:900px}}
 </style></head><body><div class="wrap">
 <h1>Радар ниш YouTube</h1>
-<div class="muted">{now} · регионы: {e(", ".join(cfg["regions"]))} · видео за {cfg["days_back"]} дн. · только ролики от {cfg.get("min_duration_sec", 0) // 60} мин · {e(hist_note)}</div>
+<div class="muted">{now} · регионы: {e(", ".join(m["name"] for m in cfg["markets"]))} · видео за {cfg["days_back"]} дн. · только ролики от {cfg.get("min_duration_sec", 0) // 60} мин · {e(hist_note)}</div>
 {demo_banner}
 <div class="stats">
  <div class="stat"><b>{len(enriched)}</b>свежих видео проанализировано</div>
@@ -643,7 +701,8 @@ def demo_data(cfg):
     def add_channel(subs, age_days):
         cid = "UC" + "".join(rnd.choice("abcdefghijklmnopqrstuvwxyz0123456789") for _ in range(10))
         channels[cid] = {"id": cid, "title": "Channel " + cid[2:7], "subs": subs, "video_count": rnd.randint(3, 400),
-                         "created": iso(now - dt.timedelta(days=age_days))}
+                         "created": iso(now - dt.timedelta(days=age_days)),
+                         "country": rnd.choice(["US", "RU", "DE", "ES", ""])}
         return cid
 
     generic = ["my morning routine", "funny moments compilation", "reacting to comments", "car review 2026",
@@ -675,6 +734,18 @@ def demo_data(cfg):
                            "published": iso(now - dt.timedelta(hours=rnd.randint(5, 150))),
                            "views": int(subs * rnd.uniform(4, 60)) + 30000, "likes": 0, "comments": 0,
                            "duration": rnd.choice([960, 1300, 1800, 2700]), "lang": "en"})
+    # «Чужой» шум с огромными просмотрами — должен отсеяться фильтром рынка
+    foreign = [("Bhai ne kya kar diya 😱 full movie hindi", ""), ("श्री राम कथा भाग 5 पूरी कहानी", "IN"),
+               ("Desi village life ka sach aur zindagi", ""), ("中国农村生活 第3集", "CN"),
+               ("Survival in jungle full episode", "IN")]
+    for _ in range(4):
+        for title, country in foreign:
+            subs = rnd.randint(500, 8000)
+            cid = add_channel(subs, rnd.randint(10, 300))
+            channels[cid]["country"] = country
+            videos.append({"id": "v" + str(len(videos)), "title": title, "tags": [], "channel_id": cid,
+                           "published": iso(now - dt.timedelta(hours=rnd.randint(5, 150))),
+                           "views": subs * 200, "likes": 0, "comments": 0, "duration": 1500, "lang": ""})
     return videos, channels
 
 
@@ -692,7 +763,8 @@ def main():
 
     cfg = dict(CONFIG)
     if args.regions:
-        cfg["regions"] = [r.strip().upper() for r in args.regions.split(",") if r.strip()]
+        want = {r.strip().upper() for r in args.regions.split(",") if r.strip()}
+        cfg["markets"] = [m for m in cfg["markets"] if m["region"] in want] or cfg["markets"]
     if args.days:
         cfg["days_back"] = args.days
     if args.max_subs:
